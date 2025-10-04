@@ -1,0 +1,29 @@
+{
+  "name": "abrbit/laravel-scout-elasticsearch",
+  "description": "A Laravel Scout driver for Elasticsearch with developer-friendly syntax.",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Abrbit Team",
+      "email": "dev@abrbit.com"
+    }
+  ],
+  "require": {
+    "php": "^8.1",
+    "laravel/scout": "^10.0",
+    "illuminate/support": "^10.0|^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Abrbit\\Scout\\Engines\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Abrbit\\Scout\\Engines\\AbrbitSearchServiceProvider"
+      ]
+    }
+  }
+}
