@@ -129,7 +129,7 @@ class AbrbitSearchEngine extends Engine
       ->keyBy($model->getKeyName());
 
     return Collection::make($results['hits']['hits'])->map(function ($hit) use ($models) {
-      $id = $hit['_source']['id'];;
+      $id = $hit['_source']['id'];
       return $models[$id] ?? null;
     })->filter();
   }
