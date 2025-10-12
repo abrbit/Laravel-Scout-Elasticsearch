@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Scout\Engines;
+namespace Abrbit\Scout\Engines;
 
 use Illuminate\Support\Facades\Http;
 use Laravel\Scout\Engines\Engine;
