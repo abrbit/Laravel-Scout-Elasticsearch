@@ -79,6 +79,7 @@ class Song extends Model
     public function toSearchableArray()
     {
         return [
+            'id' => $this->getKey(),
             'title' => $this->title,
             'description' => $this->description,
         ];
