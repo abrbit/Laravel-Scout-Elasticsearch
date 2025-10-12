@@ -76,6 +76,13 @@ class Song extends Model
 
     protected $fillable = ['title', 'description'];
 
+    protected $searchableFields = ['name', 'description'];
+
+    public function getSearchableFields(): array
+    {
+        return $this->searchableFields ?? ['id'];
+    }
+
     public function toSearchableArray()
     {
         return [
