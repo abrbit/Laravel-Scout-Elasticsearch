@@ -21,15 +21,19 @@ class AbrbitSearchEngine extends Engine
    */
   public function update($models)
   {
-    foreach ($models as $model) {
-      $payload = $model->toSearchableArray();
+      if ($models->isEmpty()) {
+          return;
+      }
 
-      Http::withToken(config('services.search.token'))
-        ->post(
-          config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents",
-          $payload
-        );
-    }
+      foreach ($models as $model) {
+          $payload = $model->toSearchableArray();
+
+          Http::withToken(config('services.search.token'))
+              ->post(
+                  config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents",
+                  $payload
+              );
+      }
   }
 
   /**
