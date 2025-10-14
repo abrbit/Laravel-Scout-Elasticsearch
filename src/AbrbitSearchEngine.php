@@ -204,4 +204,16 @@ class AbrbitSearchEngine extends Engine
     Http::withToken(config('services.search.token'))
       ->delete(config('services.search.url') . "/indexes/" . $name);
   }
+
+    /**
+     * Map the raw results to a simple array of _source documents.
+     */
+    public function mapSource($results)
+    {
+        if (! isset($results['hits']['hits']) || count($results['hits']['hits']) === 0) {
+            return [];
+        }
+
+        return collect($results['hits']['hits'])->pluck('_source')->all();
+    }
 }
