@@ -25,38 +25,15 @@ class AbrbitSearchEngine extends Engine
           return;
       }
 
-      $modelsByIndex = $models->groupBy(function ($model) {
-          return $model->searchableAs();
-      });
+      foreach ($models as $model) {
+          $payload = $model->toSearchableArray();
 
-      $modelsByIndex->each(function ($modelsInIndex, $indexName) {
-
-          $objects = $modelsInIndex->map(function ($model) {
-              $fullPayload = $model->toSearchableArray();
-              if (empty($fullPayload)) {
-                  return null;
-              }
-
-              $fieldsToIndex = [];
-              if (method_exists($model, 'getSearchableFields')) {
-                  $fieldsToIndex = $model->getSearchableFields();
-              } elseif (property_exists($model, 'searchableFields')) {
-                  $fieldsToIndex = $model->searchableFields;
-              }
-
-              $keysToIndex = array_merge([$model->getScoutKeyName()], $fieldsToIndex);
-
-              return collect($fullPayload)->only($keysToIndex)->all();
-          })->filter()->values()->all();
-
-          if (! empty($objects)) {
-              Http::withToken(config('services.search.token'))
-                  ->post(
-                      config('services.search.url') . "/indexes/" . $indexName . "/documents",
-                      $objects
-                  );
-          }
-      });
+          Http::withToken(config('services.search.token'))
+              ->post(
+                  config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents",
+                  $payload
+              );
+      }
   }
 
   /**
