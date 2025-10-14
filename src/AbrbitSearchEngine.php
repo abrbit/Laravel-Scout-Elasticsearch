@@ -21,10 +21,6 @@ class AbrbitSearchEngine extends Engine
    */
   public function update($models)
   {
-      if ($models->isEmpty()) {
-          return;
-      }
-
       foreach ($models as $model) {
           $payload = $model->toSearchableArray();
 
