@@ -24,9 +24,13 @@ class AbrbitSearchEngine extends Engine
       foreach ($models as $model) {
           $payload = $model->toSearchableArray();
 
+          if (empty($payload)) {
+              continue;
+          }
+
           Http::withToken(config('services.search.token'))
-              ->post(
-                  config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents",
+              ->put(
+                  config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents/" . $model->getKey(),
                   $payload
               );
       }
