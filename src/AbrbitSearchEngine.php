@@ -50,10 +50,12 @@ class AbrbitSearchEngine extends Engine
    */
   public function search(Builder $builder)
   {
+    $fields = method_exists($builder->model, 'getSearchableFields')
+      ? $builder->model->getSearchableFields()
+      : ($builder->model->searchableFields ?? ['id']); // fallback for older models
 
-    $fields = $builder->model->searchableFields ?? ['id']; // fallback
 
-    $query = [
+      $query = [
       'multi_match' => [
         'query' => $builder->query,
         'fields' => $fields,
