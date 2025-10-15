@@ -64,6 +64,52 @@ $songs = Song::search('شام')->get();
 $songs = Song::search('عشق')->paginate(20);
 ```
 
+## 1. Get Eloquent Models (get())
+   This is the standard Scout method. It returns an Eloquent Collection of your models, hydrated from the database based on the IDs returned from the search.
+
+```php
+use App\Models\Song;
+
+// Returns a Collection of Song models
+$songs = Song::search('عشق')->get();
+
+// Paginate results
+$songs = Song::search('عشق')->paginate(20);
+```
+
+## 2. Get Raw Source Data (getSource())
+   This is the recommended method for APIs or when you don't need full Eloquent models. It returns a clean array containing only the _source data directly from Elasticsearch, avoiding any database queries and providing excellent performance.
+
+```php
+// Returns a clean array of the data stored in Elasticsearch
+$songs = Song::search('شام')->getSource();
+
+/*
+Example Output:
+[
+    [
+        "id" => 1,
+        "title" => "شام غریبان",
+        "description" => "..."
+    ],
+    [
+        "id" => 2,
+        "title" => "شام مهتاب",
+        "description" => "..."
+    ]
+]
+*/
+```
+
+## 3. Get the Raw Elasticsearch Response (raw())
+   This method returns the entire, unprocessed JSON response from Elasticsearch. It is useful for debugging or when you need access to metadata like took, _shards, or max_score.
+
+```php
+// Returns the complete, raw response from the search engine
+$rawResponse = Song::search('شام')->raw();
+```
+
+
 Your Eloquent model only needs to implement the `Searchable` trait:
 
 ```php
