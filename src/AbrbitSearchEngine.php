@@ -21,19 +21,19 @@ class AbrbitSearchEngine extends Engine
    */
   public function update($models)
   {
-      foreach ($models as $model) {
-          $payload = $model->toSearchableArray();
+    foreach ($models as $model) {
+      $payload = $model->toSearchableArray();
 
-          if (empty($payload)) {
-              continue;
-          }
-
-          Http::withToken(config('services.search.token'))
-              ->put(
-                  config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents/" . $model->getKey(),
-                  $payload
-              );
+      if (empty($payload)) {
+        continue;
       }
+
+      Http::withToken(config('services.search.token'))
+        ->post(
+          config('services.search.url') . "/indexes/" . $model->searchableAs() . "/documents",
+          $payload
+        );
+    }
   }
 
   /**
@@ -59,7 +59,7 @@ class AbrbitSearchEngine extends Engine
       : ($builder->model->searchableFields ?? ['id']); // fallback for older models
 
 
-      $query = [
+    $query = [
       'multi_match' => [
         'query' => $builder->query,
         'fields' => $fields,
@@ -205,15 +205,15 @@ class AbrbitSearchEngine extends Engine
       ->delete(config('services.search.url') . "/indexes/" . $name);
   }
 
-    /**
-     * Map the raw results to a simple array of _source documents.
-     */
-    public function mapSource($results)
-    {
-        if (! isset($results['hits']['hits']) || count($results['hits']['hits']) === 0) {
-            return [];
-        }
-
-        return collect($results['hits']['hits'])->pluck('_source')->all();
+  /**
+   * Map the raw results to a simple array of _source documents.
+   */
+  public function mapSource($results)
+  {
+    if (! isset($results['hits']['hits']) || count($results['hits']['hits']) === 0) {
+      return [];
     }
+
+    return collect($results['hits']['hits'])->pluck('_source')->all();
+  }
 }
