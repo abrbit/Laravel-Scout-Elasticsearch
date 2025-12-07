@@ -70,9 +70,12 @@ class AbrbitSearchEngine extends Engine
       $query = call_user_func($builder->callback, $query, $builder);
     }
 
+    $extra = $builder->options['custom'] ?? [];
+
     $response = Http::withToken(config('services.search.token'))
       ->post(config('services.search.url') . "/indexes/" . $builder->model->searchableAs() . "/_search", [
         'query' => $query,
+        ...$extra,
       ]);
 
     return $response->json();
@@ -106,6 +109,7 @@ class AbrbitSearchEngine extends Engine
         'from' => ($page - 1) * $perPage,
         'size' => $perPage,
         'query' => $query,
+        ...($builder->options['custom'] ?? []),
       ]);
 
     return $response->json();
