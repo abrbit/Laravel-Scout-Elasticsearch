@@ -57,11 +57,11 @@ You can use Laravel Scout’s native methods directly:
 ```php
 use App\Models\Song;
 
-// Search across title & description fields
-$songs = Song::search('شام')->get();
-
 // Paginate results
 $songs = Song::search('عشق')->paginate(20);
+
+// Get paginated raw source data
+$songs = Song::search('عشق')->searchSource();
 ```
 
 ## 1. Get Eloquent Models (get())
@@ -101,7 +101,39 @@ Example Output:
 */
 ```
 
-## 3. Get the Raw Elasticsearch Response (raw())
+## 3. Get Paginated Raw Source Data (searchSource())
+   This method is similar to `getSource()`, but it supports pagination and is optimized for partial and short-term searches (e.g., 2 characters). It returns a paginated array of source data.
+
+```php
+// Returns a paginated array of the data stored in Elasticsearch
+$songs = Song::search('شام')->searchSource();
+
+// You can also specify the page and number of items per page
+$songs = Song::search('شام')->searchSource($perPage = 15, $page = 2);
+
+/*
+Example Output:
+[
+    'data' => [
+        [
+            "id" => 1,
+            "title" => "شام غریبان",
+            "description" => "..."
+        ],
+        [
+            "id" => 2,
+            "title" => "شام مهتاب",
+            "description" => "..."
+        ]
+    ],
+    'total' => 100,
+    'per_page' => 15,
+    'current_page' => 2,
+]
+*/
+```
+
+## 4. Get the Raw Elasticsearch Response (raw())
    This method returns the entire, unprocessed JSON response from Elasticsearch. It is useful for debugging or when you need access to metadata like took, _shards, or max_score.
 
 ```php

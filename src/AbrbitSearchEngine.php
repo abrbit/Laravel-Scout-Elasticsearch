@@ -212,7 +212,7 @@ class AbrbitSearchEngine extends Engine
   /**
    * Map the raw results to a simple array of _source documents.
    */
-  public function mapSource($results)
+  public function mapSource($results): array
   {
     if (! isset($results['hits']['hits']) || count($results['hits']['hits']) === 0) {
       return [];
@@ -220,4 +220,40 @@ class AbrbitSearchEngine extends Engine
 
     return collect($results['hits']['hits'])->pluck('_source')->all();
   }
+
+    public function searchSource(Builder $builder, $perPage, $page): array
+    {
+        $fields = method_exists($builder->model, 'getSearchableFields')
+            ? $builder->model->getSearchableFields()
+            : ['id'];
+
+        $query = is_string($builder->query)
+            ? [
+                'query_string' => [
+                    'query' => '*' . $builder->query . '*',
+                    'fields' => $fields,
+                ]
+            ]
+            : $builder->query;
+
+
+        if ($builder->callback) {
+            $query = call_user_func($builder->callback, $query, $builder);
+        }
+
+        $response = Http::withToken(config('services.search.token'))
+            ->post(config('services.search.url') . "/indexes/" . $builder->model->searchableAs() . "/_search", [
+                'from' => ($page - 1) * $perPage,
+                'size' => $perPage,
+                'query' => $query,
+                ...($builder->options['custom'] ?? []),
+            ])->json();
+
+        return [
+            'data' => collect($response['hits']['hits'] ?? [])->pluck('_source')->all(),
+            'total' => $response['hits']['total']['value'] ?? 0,
+            'per_page' => (int)$perPage,
+            'current_page' => (int)$page,
+        ];
+    }
 }

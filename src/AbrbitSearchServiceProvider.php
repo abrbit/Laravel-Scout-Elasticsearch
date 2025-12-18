@@ -22,5 +22,12 @@ class AbrbitSearchServiceProvider extends ServiceProvider
 
           return $engine->mapSource($results);
       });
+
+      Builder::macro('searchSource', function ($perPage = 20, $page = 1) {
+          /** @var \Laravel\Scout\Builder $this */
+          $engine = $this->engine();
+
+          return $engine->searchSource($this, $perPage, $page);
+      });
   }
 }
