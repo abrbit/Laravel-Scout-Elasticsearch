@@ -59,12 +59,27 @@ class AbrbitSearchEngine extends Engine
       : ($builder->model->searchableFields ?? ['id']); // fallback for older models
 
 
-    $query = [
+    $mainQuery = [
       'multi_match' => [
         'query' => $builder->query,
         'fields' => $fields,
       ],
     ];
+
+    $filters = [];
+    foreach ($builder->wheres as $field => $value) {
+        $filters[] = ['term' => [$field => $value]];
+    }
+
+    $query = [
+        'bool' => [
+            'must' => $mainQuery,
+        ],
+    ];
+
+    if (count($filters) > 0) {
+        $query['bool']['filter'] = $filters;
+    }
 
     if ($builder->callback) {
       $query = call_user_func($builder->callback, $query, $builder);
@@ -92,12 +107,27 @@ class AbrbitSearchEngine extends Engine
       : ['id'];
 
 
-    $query = [
+    $mainQuery = [
       'multi_match' => [
         'query' => $builder->query,
         'fields' => $fields,
       ],
     ];
+
+    $filters = [];
+    foreach ($builder->wheres as $field => $value) {
+        $filters[] = ['term' => [$field => $value]];
+    }
+
+    $query = [
+        'bool' => [
+            'must' => $mainQuery,
+        ],
+    ];
+
+    if (count($filters) > 0) {
+        $query['bool']['filter'] = $filters;
+    }
 
 
     if ($builder->callback) {
@@ -227,7 +257,7 @@ class AbrbitSearchEngine extends Engine
             ? $builder->model->getSearchableFields()
             : ['id'];
 
-        $query = is_string($builder->query)
+        $mainQuery = is_string($builder->query)
             ? [
                 'query_string' => [
                     'query' => '*' . $builder->query . '*',
@@ -236,6 +266,20 @@ class AbrbitSearchEngine extends Engine
             ]
             : $builder->query;
 
+        $filters = [];
+        foreach ($builder->wheres as $field => $value) {
+            $filters[] = ['term' => [$field => $value]];
+        }
+
+        $query = [
+            'bool' => [
+                'must' => $mainQuery,
+            ],
+        ];
+
+        if (count($filters) > 0) {
+            $query['bool']['filter'] = $filters;
+        }
 
         if ($builder->callback) {
             $query = call_user_func($builder->callback, $query, $builder);
