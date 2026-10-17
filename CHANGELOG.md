@@ -3,10 +3,10 @@
 All notable changes to `abrbit/laravel-scout-elasticsearch` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [2.0.0] - 2026-10-17
+## [3.0.0] - 2026-10-17
 
 Major release: failures that were silently ignored now throw by default, and PHP 8.2 is the new minimum.
-See "Upgrading from 1.x to 2.0" in the README.
+See "Upgrading to 3.0" in the README.
 
 ### Added
 - Optional Elasticsearch `_bulk` indexing (`services.search.bulk`, default `false`): NDJSON `index` / `delete`
@@ -43,3 +43,9 @@ See "Upgrading from 1.x to 2.0" in the README.
 ### Fixed
 - `mapIds()` read `hits.*.id`, which does not exist in Elasticsearch responses, so `keys()` always returned an empty collection.
 - `delete()` of an already-removed document no longer counts as an error.
+
+## [2.0.0] - 2025-12-18
+
+- Tag for commit `52b960f` ("Improve query"), on top of 1.0.6: `search()`, `paginate()` and `searchSource()`
+  wrap the main query in a `bool` query and apply Scout `where()` constraints as `term` filters.
+  Committed 2025-12-18, tagged 2026-10-17.

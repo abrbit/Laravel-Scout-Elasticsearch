@@ -288,9 +288,9 @@ Example search response:
 
 ---
 
-## ⬆️ Upgrading from 1.x to 2.0
+## ⬆️ Upgrading to 3.0 (from 1.x or 2.0.0)
 
-2.0 is a major release because failures are no longer silent:
+3.0 is a major release because failures are no longer silent. 2.0.0 is the 1.0.6 code plus `where()` filter support in queries, so these notes apply when upgrading from either 1.x or 2.0.0:
 
 1. **Failed writes now throw** `AbrbitIndexingException`. Queued indexing jobs are retried. Synchronous saves (`scout.queue = false`) surface the error to the caller, so set `'throw_on_index_errors' => false` to keep 1.x behaviour (errors are logged instead).
 2. **Failed searches now throw** `AbrbitSearchException` instead of returning the error body (which looked like "no results"). Set `'throw_on_search_errors' => false` to restore 1.x behaviour.
