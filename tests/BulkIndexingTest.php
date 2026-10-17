@@ -100,6 +100,7 @@ class BulkIndexingTest extends TestCase
 
   public function test_bulk_item_errors_throw_with_the_failed_ids(): void
   {
+    config(['services.search.retry_times' => 1]);
     Http::fake(['*' => Http::response($this->bulkResponse([
       ['index' => ['_id' => '1', 'status' => 201, 'result' => 'created']],
       ['index' => ['_id' => '2', 'status' => 400, 'error' => ['type' => 'mapper_parsing_exception', 'reason' => 'failed to parse field [title]']]],
@@ -194,6 +195,7 @@ class BulkIndexingTest extends TestCase
 
   public function test_delete_bulk_errors_other_than_not_found_throw(): void
   {
+    config(['services.search.retry_times' => 1]);
     Http::fake(['*' => Http::response($this->bulkResponse([
       ['delete' => ['_id' => '1', 'status' => 404, 'result' => 'not_found']],
       ['delete' => ['_id' => '2', 'status' => 503, 'error' => ['type' => 'unavailable_shards_exception', 'reason' => 'primary shard is not active']]],
@@ -203,6 +205,113 @@ class BulkIndexingTest extends TestCase
     $this->expectExceptionMessage('1 document(s)');
 
     $this->engine()->delete($this->products(2));
+  }
+
+  public function test_chunks_are_also_split_by_byte_size(): void
+  {
+    // Each document is ~70 bytes of NDJSON, so 150 bytes fit two documents per request.
+    config(['services.search.bulk_max_bytes' => 150]);
+    Http::fake(['*' => Http::response($this->bulkResponse([]))]);
+
+    $this->engine()->update($this->products(5));
+
+    Http::assertSentCount(3);
+    Http::assertSent(fn (Request $r) => strlen($r->body()) <= 150);
+  }
+
+  public function test_document_larger_than_the_byte_limit_fails_alone(): void
+  {
+    config(['services.search.bulk_max_bytes' => 100]);
+    Http::fake(['*' => Http::response($this->bulkResponse([]))]);
+
+    $products = $this->products(2);
+    $products[1]->title = str_repeat('x', 200);
+
+    try {
+      $this->engine()->update($products);
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame(['2'], $e->failedIds());
+      $this->assertStringContainsString('exceeds bulk_max_bytes', $e->failures()[2]);
+    }
+
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $r) => array_column($this->ndjson($r), 'index') === [['_id' => '1']]);
+  }
+
+  public function test_models_with_an_empty_scout_key_fail_without_blocking_the_chunk(): void
+  {
+    Http::fake(['*' => Http::response($this->bulkResponse([]))]);
+
+    try {
+      $this->engine()->update(new Collection([
+        (new SkuProduct)->forceFill(['id' => 1, 'sku' => '', 'title' => 'No sku']),
+        (new SkuProduct)->forceFill(['id' => 2, 'sku' => 'SKU-2', 'title' => 'Plate']),
+      ]));
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame(['(empty)' => 'empty scout key'], $e->failures());
+    }
+
+    Http::assertSent(fn (Request $r) => array_column($this->ndjson($r), 'index') === [['_id' => 'SKU-2']]);
+  }
+
+  public function test_only_items_failing_with_429_or_5xx_are_resent(): void
+  {
+    Http::fake(['*' => Http::sequence()
+      ->push($this->bulkResponse([
+        ['index' => ['_id' => '1', 'status' => 201, 'result' => 'created']],
+        ['index' => ['_id' => '2', 'status' => 429, 'error' => ['type' => 'bulk_operation_failed', 'reason' => 'bulk operation failed']]],
+        ['index' => ['_id' => '3', 'status' => 400, 'error' => ['type' => 'bulk_operation_failed', 'reason' => 'bulk operation failed']]],
+        ['index' => ['_id' => '4', 'status' => 503, 'error' => ['type' => 'bulk_operation_failed', 'reason' => 'bulk operation failed']]],
+      ], true))
+      ->push($this->bulkResponse([
+        ['index' => ['_id' => '2', 'status' => 201, 'result' => 'created']],
+        ['index' => ['_id' => '4', 'status' => 201, 'result' => 'created']],
+      ]))]);
+
+    try {
+      $this->engine()->update($this->products(4));
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame(['3'], $e->failedIds());
+    }
+
+    $bodies = Http::recorded()->map(fn ($pair) => array_column($this->ndjson($pair[0]), 'index'))->all();
+    $this->assertSame([
+      [['_id' => '1'], ['_id' => '2'], ['_id' => '3'], ['_id' => '4']],
+      [['_id' => '2'], ['_id' => '4']],
+    ], $bodies);
+  }
+
+  public function test_item_retries_stop_after_retry_times(): void
+  {
+    config(['services.search.retry_times' => 2]);
+    Http::fake(['*' => Http::response($this->bulkResponse([
+      ['index' => ['_id' => '1', 'status' => 429, 'error' => ['type' => 'bulk_operation_failed', 'reason' => 'bulk operation failed']]],
+    ], true))]);
+
+    $this->expectException(AbrbitIndexingException::class);
+
+    try {
+      $this->engine()->update($this->products(1));
+    } finally {
+      Http::assertSentCount(2);
+    }
+  }
+
+  public function test_missing_index_fails_the_whole_chunk(): void
+  {
+    Http::fake(['*' => Http::response(['error' => 'index not found'], 404)]);
+
+    try {
+      $this->engine()->update($this->products(2));
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame(['1' => 'index not found', '2' => 'index not found'], $e->failures());
+    }
+
+    Http::assertSentCount(1);
   }
 
   public function test_custom_bulk_path(): void

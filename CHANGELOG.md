@@ -3,6 +3,24 @@
 All notable changes to `abrbit/laravel-scout-elasticsearch` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] - 2026-10-17
+
+### Added
+- `bulk_max_bytes` option (default 5 MiB): bulk requests are split by body size as well as by `bulk_size`.
+  A document larger than the limit fails on its own instead of failing the whole request with 413.
+- Bulk items that fail with 429 / 5xx are re-sent on their own, up to `retry_times` attempts;
+  successful items are never repeated.
+
+### Fixed
+- A plain-text 404 (route not provided by the service) is no longer treated as "document not found" by `delete()`
+  and `flush()`. It is reported as `HTTP 404 (endpoint not available)`. Before, deletes without `bulk` failed silently,
+  because the Abrbit service has no `DELETE indexes/{index}/documents/{id}` route.
+- A model with an empty scout key is reported as failed instead of making the service reject the whole bulk request.
+
+### Upgrade notes
+- On the Abrbit service, deletes only work through `_bulk`: set `SEARCH_BULK=true` when upgrading.
+  With `bulk` off, deletes are now reported as failures (they were silently ignored before).
+
 ## [3.0.0] - 2026-10-17
 
 Major release: failures that were silently ignored now throw by default, and PHP 8.2 is the new minimum.

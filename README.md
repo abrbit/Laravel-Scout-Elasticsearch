@@ -55,7 +55,8 @@ And in `config/services.php`, add:
     'retry_sleep_ms' => env('SEARCH_RETRY_SLEEP_MS', 200),   // backoff: 200ms, 400ms, 800ms, ...
 
     'bulk' => env('SEARCH_BULK', false),                     // use the _bulk endpoint (see below)
-    'bulk_size' => env('SEARCH_BULK_SIZE', 500),             // documents per bulk request
+    'bulk_size' => env('SEARCH_BULK_SIZE', 500),             // operations per bulk request (Abrbit max: 1000)
+    'bulk_max_bytes' => 5 * 1024 * 1024,                     // bytes per bulk request (Abrbit max: 5 MiB)
     'bulk_path' => 'indexes/{index}/_bulk',                  // bulk endpoint, relative to url
     'concurrency' => env('SEARCH_CONCURRENCY', 10),          // parallel requests when bulk is off
     'explicit_ids' => env('SEARCH_EXPLICIT_IDS', false),     // bulk off: PUT documents/{id} instead of POST documents
@@ -72,7 +73,8 @@ And in `config/services.php`, add:
 | `retry_times` | `3` | Total attempts per request. Retries happen **only** on connection errors / timeouts, HTTP 429 and HTTP 5xx; other 4xx responses fail immediately. Exception: when neither `bulk` nor `explicit_ids` is enabled, `POST indexes/{index}/documents` is treated conservatively and retried only when the connection failed before the request was sent (DNS failure, connection refused, connect timeout), never on 429 / 5xx / read timeouts. |
 | `retry_sleep_ms` | `200` | Base delay between attempts, doubled after each attempt. |
 | `bulk` | `false` | Send writes through the Elasticsearch `_bulk` API (NDJSON). |
-| `bulk_size` | `500` | Documents per bulk request. |
+| `bulk_size` | `500` | Maximum operations per bulk request. The Abrbit service accepts at most 1000. |
+| `bulk_max_bytes` | `5242880` (5 MiB) | Maximum body size per bulk request; requests are split before this is reached. A single document larger than this fails on its own. The Abrbit service accepts at most 5 MiB. |
 | `bulk_path` | `indexes/{index}/_bulk` | Bulk endpoint; `{index}` is replaced by `searchableAs()`. |
 | `concurrency` | `10` | Parallel requests (`Http::pool`) when `bulk` is off. |
 | `explicit_ids` | `false` | When `bulk` is off, write documents with `PUT indexes/{index}/documents/{scoutKey}` instead of `POST indexes/{index}/documents`. |
@@ -85,13 +87,15 @@ All requests share one HTTP connection handler, so connections (and TLS sessions
 
 With `bulk` enabled:
 
-- `update()` sends `index` actions with `_id` set to the model's `getScoutKey()`, `bulk_size` documents per request. Models whose `toSearchableArray()` is empty are skipped. Re-indexing a model overwrites its document, so it never creates a duplicate.
+- `update()` sends `index` actions with `_id` set to the model's `getScoutKey()`, split by `bulk_size` operations and `bulk_max_bytes` bytes. Models whose `toSearchableArray()` is empty are skipped. Re-indexing a model overwrites its document, so it never creates a duplicate.
 - `delete()` sends `delete` actions. Documents that are already gone (`404` / `not_found`) count as deleted.
-- The bulk response is checked item by item. If any item failed, an `AbrbitIndexingException` lists the failed ids and reasons.
+- The bulk response is checked item by item. Items that failed with 429 / 5xx are re-sent on their own (up to `retry_times` attempts); items that succeeded are never repeated. If any item still failed, an `AbrbitIndexingException` lists the failed ids and reasons.
+- A model with an empty scout key is reported as failed without blocking the rest of the request (the service rejects a whole request with an empty `_id`).
+- The index must already exist: the Abrbit service does not create an index from a bulk request and answers `404 index not found`. A first `POST indexes/{index}/documents` creates it.
 
 With `bulk` disabled (the default), one request is sent per document, `concurrency` at a time, and every response is checked the same way. Without `explicit_ids`, a document whose `POST` got a 429 / 5xx is reported as failed rather than re-sent (conservative retry rule); the queued job's retry re-indexes it.
 
-> **Before enabling `bulk`**, confirm that your Abrbit search service exposes `POST {bulk_path}` with Elasticsearch NDJSON semantics.
+> **Enable `bulk` on the Abrbit search service.** `POST indexes/{index}/_bulk` is supported (Elasticsearch NDJSON: `index`, `create`, `update`, `delete`). The service has **no** single-document delete route (`DELETE indexes/{index}/documents/{id}`), so `delete()` only works with `bulk` enabled; without it, every delete is reported as `HTTP 404 (endpoint not available)`.
 >
 > Existing indexes do **not** need a flush or re-import when you enable `bulk` or `explicit_ids`. The Abrbit service already stores `POST indexes/{index}/documents` payloads with `_id` = the payload's `id`, so bulk / `PUT` writes (`_id` = `getScoutKey()`) overwrite the same documents. This holds as long as `toSearchableArray()` puts the scout key in `id`, which is the default.
 
@@ -117,7 +121,7 @@ $products->first()->searchableUsing()->partialUpdate($products, [
 
 Both extend `AbrbitException` (a `RuntimeException`). When Scout runs with `'queue' => true`, a failed write fails the `MakeSearchable` / `RemoveFromSearch` job, so the queue worker retries it. Exception messages contain document ids and Elasticsearch error reasons, never the token or document payloads.
 
-`flush()` on an index that does not exist (404) does nothing; it does not throw.
+A 404 counts as "not found" (and is ignored by `delete()` / `flush()`) only when the body is JSON from the index, such as `"result":"not_found"` or `"index not found"`. A plain-text 404 means the service does not provide that route and is reported as `HTTP 404 (endpoint not available)`. The Abrbit service currently has no route for `flush()`, `createIndex()` or `deleteIndex()`.
 
 ---
 

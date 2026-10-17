@@ -190,7 +190,7 @@ class HttpClientTest extends TestCase
   public function test_flush_ignores_missing_index_but_index_admin_errors_throw(): void
   {
     Http::fake([
-      '*/indexes/products/documents' => Http::response('', 404),
+      '*/indexes/products/documents' => Http::response(['error' => 'index not found'], 404),
       '*' => Http::response(['error' => ['type' => 'resource_already_exists_exception', 'reason' => 'index exists']], 400),
     ]);
 
@@ -200,5 +200,15 @@ class HttpClientTest extends TestCase
     $this->expectExceptionMessage('resource_already_exists_exception');
 
     $this->engine()->createIndex('products');
+  }
+
+  public function test_flush_reports_a_missing_endpoint(): void
+  {
+    Http::fake(['*' => Http::response('404 page not found', 404, ['Content-Type' => 'text/plain'])]);
+
+    $this->expectException(AbrbitIndexingException::class);
+    $this->expectExceptionMessage('endpoint not available');
+
+    $this->engine()->flush(new Product);
   }
 }

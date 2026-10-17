@@ -189,10 +189,23 @@ class ConcurrentFallbackTest extends TestCase
 
   public function test_delete_of_missing_documents_succeeds(): void
   {
-    Http::fake(['*' => Http::response('', 404)]);
+    Http::fake(['*' => Http::response(['result' => 'not_found'], 404)]);
 
     $this->engine()->delete($this->products(2));
 
     Http::assertSentCount(2);
+  }
+
+  public function test_delete_reports_a_missing_endpoint_instead_of_treating_it_as_deleted(): void
+  {
+    // Plain-text 404 from the service router: the route does not exist.
+    Http::fake(['*' => Http::response('404 page not found', 404, ['Content-Type' => 'text/plain'])]);
+
+    try {
+      $this->engine()->delete($this->products(1));
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame(['1' => 'HTTP 404 (endpoint not available)'], $e->failures());
+    }
   }
 }

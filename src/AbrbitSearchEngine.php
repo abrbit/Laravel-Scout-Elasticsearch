@@ -34,6 +34,7 @@ class AbrbitSearchEngine extends Engine
     'retry_sleep_ms' => 200,
     'bulk' => false,
     'bulk_size' => 500,
+    'bulk_max_bytes' => 5 * 1024 * 1024,
     'bulk_path' => 'indexes/{index}/_bulk',
     'concurrency' => 10,
     'explicit_ids' => false,
@@ -459,7 +460,11 @@ class AbrbitSearchEngine extends Engine
   }
 
   /**
-   * Send bulk operations (`[action, id, body|null]`) in chunks of `bulk_size`.
+   * Send bulk operations (`[action, id, body|null]`) in chunks of at most `bulk_size`
+   * operations and `bulk_max_bytes` bytes.
+   *
+   * Items that fail with 429 / 5xx are re-sent on their own (up to `retry_times` attempts);
+   * other failed items are reported as they are.
    *
    * @return array<string, string> Failed document id => reason.
    *
@@ -468,58 +473,114 @@ class AbrbitSearchEngine extends Engine
   protected function sendBulk(string $index, array $operations): array
   {
     $failures = [];
-    $path = str_replace('{index}', $index, (string) $this->option('bulk_path'));
+    $entries = [];
+    $maxBytes = max(1, (int) $this->option('bulk_max_bytes'));
 
-    foreach (array_chunk($operations, max(1, (int) $this->option('bulk_size'))) as $chunk) {
-      $lines = [];
-      $ids = [];
+    foreach ($operations as [$action, $id, $body]) {
+      $id = (string) $id;
 
-      foreach ($chunk as [$action, $id, $body]) {
-        try {
-          $line = json_encode([$action => ['_id' => (string) $id]], self::JSON_FLAGS);
-          if ($body !== null) {
-            $line .= "\n" . json_encode($body, self::JSON_FLAGS);
-          }
-        } catch (JsonException $e) {
-          $failures[$id] = 'json encoding failed: ' . $e->getMessage();
-          continue;
-        }
-
-        $lines[] = $line;
-        $ids[] = $id;
-      }
-
-      if (empty($lines)) {
+      // One invalid line makes the service reject the whole request, so check ids up front.
+      if ($id === '') {
+        $failures['(empty)'] = 'empty scout key';
         continue;
       }
 
       try {
-        $response = $this->http()
-          ->withBody(implode("\n", $lines) . "\n", 'application/x-ndjson')
-          ->post($path);
-      } catch (RequestException|ConnectionException $e) {
-        $reason = $e instanceof RequestException
-          ? $this->describeResponse($e->response)
-          : 'connection error';
-
-        throw AbrbitIndexingException::forFailures('bulk request', $index, $failures + array_fill_keys($ids, $reason), $e);
+        $line = json_encode([$action => ['_id' => $id]], self::JSON_FLAGS) . "\n";
+        if ($body !== null) {
+          $line .= json_encode($body, self::JSON_FLAGS) . "\n";
+        }
+      } catch (JsonException $e) {
+        $failures[$id] = 'json encoding failed: ' . $e->getMessage();
+        continue;
       }
 
-      $failures += $this->parseBulkResponse($response, $ids);
+      if (strlen($line) > $maxBytes) {
+        $failures[$id] = 'document exceeds bulk_max_bytes (' . strlen($line) . ' bytes)';
+        continue;
+      }
+
+      $entries[] = [$id, $line];
+    }
+
+    $path = str_replace('{index}', $index, (string) $this->option('bulk_path'));
+    $maxAttempts = max(1, (int) $this->option('retry_times'));
+
+    foreach ($this->chunkBulkEntries($entries, $maxBytes) as $pending) {
+      for ($attempt = 1; ! empty($pending); $attempt++) {
+        $ids = array_column($pending, 0);
+
+        try {
+          $response = $this->http()
+            ->withBody(implode('', array_column($pending, 1)), 'application/x-ndjson')
+            ->post($path);
+        } catch (RequestException|ConnectionException $e) {
+          $reason = $e instanceof RequestException
+            ? $this->describeResponse($e->response)
+            : 'connection error';
+
+          throw AbrbitIndexingException::forFailures('bulk request', $index, $failures + array_fill_keys($ids, $reason), $e);
+        }
+
+        $retry = [];
+        foreach ($this->parseBulkResponse($response, $ids) as $position => [$id, $status, $reason]) {
+          if ($attempt < $maxAttempts && ($status === 429 || $status >= 500) && isset($pending[$position])) {
+            $retry[] = $pending[$position];
+          } else {
+            $failures[$id] = $reason;
+          }
+        }
+
+        if (! empty($retry) && ($sleep = $this->retryDelay($attempt)) > 0) {
+          usleep($sleep * 1000);
+        }
+
+        $pending = $retry;
+      }
     }
 
     return $failures;
   }
 
   /**
-   * @return array<string, string> Failed document id => reason.
+   * Split encoded `[id, ndjson]` entries by operation count and body size.
+   */
+  protected function chunkBulkEntries(array $entries, int $maxBytes): array
+  {
+    $maxOperations = max(1, (int) $this->option('bulk_size'));
+    $chunks = [];
+    $chunk = [];
+    $bytes = 0;
+
+    foreach ($entries as $entry) {
+      $length = strlen($entry[1]);
+
+      if (! empty($chunk) && (count($chunk) >= $maxOperations || $bytes + $length > $maxBytes)) {
+        $chunks[] = $chunk;
+        $chunk = [];
+        $bytes = 0;
+      }
+
+      $chunk[] = $entry;
+      $bytes += $length;
+    }
+
+    if (! empty($chunk)) {
+      $chunks[] = $chunk;
+    }
+
+    return $chunks;
+  }
+
+  /**
+   * @return array<int, array{0: string, 1: int, 2: string}> Position => [id, status, reason] of failed items.
    */
   protected function parseBulkResponse(Response $response, array $ids): array
   {
     $items = $response->json('items');
 
     if (! is_array($items)) {
-      return array_fill_keys($ids, 'unexpected bulk response (no items)');
+      return array_map(fn ($id) => [$id, 0, 'unexpected bulk response (no items)'], $ids);
     }
 
     $failures = [];
@@ -534,7 +595,7 @@ class AbrbitSearchEngine extends Engine
       }
 
       if (isset($result['error']) || $status >= 300) {
-        $failures[$id] = $this->describeError($result['error'] ?? null, "HTTP {$status}");
+        $failures[$position] = [$id, $status, $this->describeError($result['error'] ?? null, "HTTP {$status}")];
       }
     }
 
@@ -571,7 +632,7 @@ class AbrbitSearchEngine extends Engine
         foreach ($ids as $position => $id) {
           $result = $results[$position] ?? null;
 
-          if ($result instanceof Response && ($result->successful() || ($ignoreNotFound && $result->status() === 404))) {
+          if ($result instanceof Response && ($result->successful() || ($ignoreNotFound && $this->isNotFound($result)))) {
             continue;
           }
 
@@ -613,7 +674,7 @@ class AbrbitSearchEngine extends Engine
     try {
       $send($this->http());
     } catch (RequestException $e) {
-      if ($ignoreNotFound && $e->response->status() === 404) {
+      if ($ignoreNotFound && $this->isNotFound($e->response)) {
         return;
       }
 
@@ -756,11 +817,26 @@ class AbrbitSearchEngine extends Engine
   }
 
   /**
+   * A 404 from the index itself (JSON body, e.g. `"result":"not_found"`), as opposed to a
+   * plain-text "404 page not found" from a route the service does not provide.
+   */
+  protected function isNotFound(Response $response): bool
+  {
+    return $response->status() === 404 && is_array($response->json());
+  }
+
+  /**
    * A short, payload-free description of a failed response.
    */
   protected function describeResponse(Response $response): string
   {
-    return $this->describeError($response->json('error'), 'HTTP ' . $response->status());
+    $fallback = 'HTTP ' . $response->status();
+
+    if ($response->status() === 404 && ! is_array($response->json())) {
+      $fallback .= ' (endpoint not available)';
+    }
+
+    return $this->describeError($response->json('error'), $fallback);
   }
 
   protected function describeError($error, string $fallback): string
