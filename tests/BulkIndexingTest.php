@@ -5,6 +5,9 @@ namespace Abrbit\Scout\Engines\Tests;
 use Abrbit\Scout\Engines\Exceptions\AbrbitIndexingException;
 use Abrbit\Scout\Engines\Tests\Fixtures\Product;
 use Abrbit\Scout\Engines\Tests\Fixtures\SkuProduct;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Promise\Create;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
@@ -151,6 +154,89 @@ class BulkIndexingTest extends TestCase
     }
 
     Http::assertSentCount(2);
+  }
+
+  public function test_failed_chunk_is_logged_and_later_chunks_still_sent_when_throwing_is_disabled(): void
+  {
+    config([
+      'services.search.bulk_size' => 1,
+      'services.search.retry_times' => 1,
+      'services.search.throw_on_index_errors' => false,
+    ]);
+    Http::fake(['*' => Http::sequence()
+      ->push(['error' => ['type' => 'internal_error', 'reason' => 'boom']], 500)
+      ->push($this->bulkResponse([['index' => ['_id' => '2', 'status' => 201]]]))
+      ->push($this->bulkResponse([['index' => ['_id' => '3', 'status' => 201]]]))]);
+
+    Log::shouldReceive('warning')->once()->withArgs(
+      fn ($message, $context) => $context['failed_ids'] === ['1'] && str_contains($message, 'internal_error: boom')
+    );
+
+    $this->engine()->update($this->products(3));
+
+    Http::assertSentCount(3);
+  }
+
+  public function test_failed_chunk_throws_only_after_all_chunks_were_attempted(): void
+  {
+    config(['services.search.bulk_size' => 2, 'services.search.retry_times' => 1]);
+    Http::fake(['*' => Http::sequence()
+      ->push(['error' => ['type' => 'internal_error', 'reason' => 'boom']], 500)
+      ->push($this->bulkResponse([['index' => ['_id' => '3', 'status' => 201]], ['index' => ['_id' => '4', 'status' => 201]]]))]);
+
+    try {
+      $this->engine()->update($this->products(4));
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame(['1', '2'], $e->failedIds());
+      $this->assertInstanceOf(RequestException::class, $e->getPrevious());
+    }
+
+    Http::assertSentCount(2);
+  }
+
+  public function test_connection_error_skips_remaining_chunks_but_reports_their_ids(): void
+  {
+    config(['services.search.bulk_size' => 2, 'services.search.retry_times' => 1]);
+
+    $attempts = 0;
+    Http::fake(function (Request $r) use (&$attempts) {
+      $attempts++;
+
+      return Create::rejectionFor(new ConnectException('Connection timed out', $r->toPsrRequest()));
+    });
+
+    try {
+      $this->engine()->update($this->products(5));
+      $this->fail('Expected AbrbitIndexingException');
+    } catch (AbrbitIndexingException $e) {
+      $this->assertSame([
+        '1' => 'connection error',
+        '2' => 'connection error',
+        '3' => 'skipped after connection error',
+        '4' => 'skipped after connection error',
+        '5' => 'skipped after connection error',
+      ], $e->failures());
+      $this->assertInstanceOf(ConnectionException::class, $e->getPrevious());
+    }
+
+    $this->assertSame(1, $attempts);
+  }
+
+  public function test_connection_error_is_logged_when_throwing_is_disabled(): void
+  {
+    config([
+      'services.search.bulk_size' => 2,
+      'services.search.retry_times' => 1,
+      'services.search.throw_on_index_errors' => false,
+    ]);
+    Http::fake(fn (Request $r) => Create::rejectionFor(new ConnectException('Connection refused', $r->toPsrRequest())));
+
+    Log::shouldReceive('warning')->once()->withArgs(
+      fn ($message, $context) => $context['failed_ids'] === ['1', '2', '3']
+    );
+
+    $this->engine()->delete($this->products(3));
   }
 
   public function test_unexpected_bulk_response_is_a_failure(): void

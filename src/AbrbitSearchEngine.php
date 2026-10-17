@@ -65,6 +65,7 @@ class AbrbitSearchEngine extends Engine
     $this->groupByIndex($models)->each(function ($models, $index) {
       $documents = [];
       $failures = [];
+      $previous = null;
 
       foreach ($models as $model) {
         $payload = $model->toSearchableArray();
@@ -86,7 +87,7 @@ class AbrbitSearchEngine extends Engine
           $operations[] = ['index', $id, $payload];
         }
 
-        $failures = $this->sendBulk($index, $operations);
+        $failures = $this->sendBulk($index, $operations, $previous);
       } else {
         $explicitIds = (bool) $this->option('explicit_ids');
 
@@ -99,7 +100,7 @@ class AbrbitSearchEngine extends Engine
         }, idempotent: $explicitIds);
       }
 
-      $this->reportIndexingFailures('indexing', $index, $failures);
+      $this->reportIndexingFailures('indexing', $index, $failures, $previous);
     });
   }
 
@@ -136,7 +137,10 @@ class AbrbitSearchEngine extends Engine
         }
       }
 
-      $this->reportIndexingFailures('partial update', $index, $this->sendBulk($index, $operations));
+      $previous = null;
+      $failures = $this->sendBulk($index, $operations, $previous);
+
+      $this->reportIndexingFailures('partial update', $index, $failures, $previous);
     });
   }
 
@@ -157,20 +161,22 @@ class AbrbitSearchEngine extends Engine
         return;
       }
 
+      $previous = null;
+
       if ($this->usesBulk()) {
         $operations = [];
         foreach (array_keys($ids) as $id) {
           $operations[] = ['delete', (string) $id, null];
         }
 
-        $failures = $this->sendBulk($index, $operations);
+        $failures = $this->sendBulk($index, $operations, $previous);
       } else {
         $failures = $this->sendConcurrently($ids, function (PendingRequest $request, $_, $id) use ($index) {
           return $request->delete($this->documentsPath($index, $id));
         }, ignoreNotFound: true);
       }
 
-      $this->reportIndexingFailures('delete', $index, $failures);
+      $this->reportIndexingFailures('delete', $index, $failures, $previous);
     });
   }
 
@@ -466,11 +472,15 @@ class AbrbitSearchEngine extends Engine
    * Items that fail with 429 / 5xx are re-sent on their own (up to `retry_times` attempts);
    * other failed items are reported as they are.
    *
-   * @return array<string, string> Failed document id => reason.
+   * Nothing is thrown here; the caller reports the failures. When a whole request fails with
+   * an HTTP error, its ids are recorded and the next chunk is sent. After a connection error
+   * or timeout the remaining chunks are skipped (and reported), so an outage does not wait
+   * out every chunk's retries.
    *
-   * @throws AbrbitIndexingException when a whole bulk request fails.
+   * @param  Throwable|null  $previous  Set to the last request-level exception, if any.
+   * @return array<string, string> Failed document id => reason.
    */
-  protected function sendBulk(string $index, array $operations): array
+  protected function sendBulk(string $index, array $operations, ?Throwable &$previous = null): array
   {
     $failures = [];
     $entries = [];
@@ -506,7 +516,9 @@ class AbrbitSearchEngine extends Engine
     $path = str_replace('{index}', $index, (string) $this->option('bulk_path'));
     $maxAttempts = max(1, (int) $this->option('retry_times'));
 
-    foreach ($this->chunkBulkEntries($entries, $maxBytes) as $pending) {
+    $chunks = $this->chunkBulkEntries($entries, $maxBytes);
+
+    foreach ($chunks as $number => $pending) {
       for ($attempt = 1; ! empty($pending); $attempt++) {
         $ids = array_column($pending, 0);
 
@@ -514,12 +526,20 @@ class AbrbitSearchEngine extends Engine
           $response = $this->http()
             ->withBody(implode('', array_column($pending, 1)), 'application/x-ndjson')
             ->post($path);
-        } catch (RequestException|ConnectionException $e) {
-          $reason = $e instanceof RequestException
-            ? $this->describeResponse($e->response)
-            : 'connection error';
+        } catch (RequestException $e) {
+          $previous = $e;
+          $failures += array_fill_keys($ids, $this->describeResponse($e->response));
 
-          throw AbrbitIndexingException::forFailures('bulk request', $index, $failures + array_fill_keys($ids, $reason), $e);
+          continue 2;
+        } catch (ConnectionException $e) {
+          $previous = $e;
+          $failures += array_fill_keys($ids, 'connection error');
+
+          foreach (array_slice($chunks, $number + 1) as $skipped) {
+            $failures += array_fill_keys(array_column($skipped, 0), 'skipped after connection error');
+          }
+
+          return $failures;
         }
 
         $retry = [];

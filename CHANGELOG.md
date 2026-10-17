@@ -3,6 +3,17 @@
 All notable changes to `abrbit/laravel-scout-elasticsearch` are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [3.1.1] - 2026-10-17
+
+### Fixed
+- `throw_on_index_errors = false` was ignored when a whole bulk request failed (5xx after retries, connection
+  error, timeout): `sendBulk()` threw directly instead of going through `reportIndexingFailures()`, so a service
+  outage still raised an exception (e.g. an HTTP 500 on a synchronous Scout save).
+- A failed bulk request no longer aborts the rest of the call. After an HTTP error the next chunks are still sent;
+  after a connection error or timeout the remaining chunks are skipped, so an outage does not wait out every
+  chunk's retries. Every failed or skipped id is reported once, through `throw_on_index_errors`
+  (throw after all chunks were handled, or log a warning).
+
 ## [3.1.0] - 2026-10-17
 
 ### Added

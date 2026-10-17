@@ -90,6 +90,7 @@ With `bulk` enabled:
 - `update()` sends `index` actions with `_id` set to the model's `getScoutKey()`, split by `bulk_size` operations and `bulk_max_bytes` bytes. Models whose `toSearchableArray()` is empty are skipped. Re-indexing a model overwrites its document, so it never creates a duplicate.
 - `delete()` sends `delete` actions. Documents that are already gone (`404` / `not_found`) count as deleted.
 - The bulk response is checked item by item. Items that failed with 429 / 5xx are re-sent on their own (up to `retry_times` attempts); items that succeeded are never repeated. If any item still failed, an `AbrbitIndexingException` lists the failed ids and reasons.
+- If a whole bulk request fails, its ids are recorded and the next chunk is still sent after an HTTP error. After a connection error or timeout the remaining chunks are skipped and their ids reported as `skipped after connection error`. All failures of one call are reported once, following `throw_on_index_errors`.
 - A model with an empty scout key is reported as failed without blocking the rest of the request (the service rejects a whole request with an empty `_id`).
 - The index must already exist: the Abrbit service does not create an index from a bulk request and answers `404 index not found`. A first `POST indexes/{index}/documents` creates it.
 
